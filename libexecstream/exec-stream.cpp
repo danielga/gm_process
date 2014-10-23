@@ -234,6 +234,8 @@ protected:
     virtual int_type overflow( int_type c );
     virtual int sync();
 
+	exec_stream_buffer_t &operator=( const exec_stream_buffer_t & ) { };
+
 private:
     bool send_buffer();
     bool send_char( char c );
@@ -312,14 +314,14 @@ exec_stream_buffer_t::int_type exec_stream_buffer_t::overflow( exec_stream_buffe
     }
     if( c!=traits_type::eof() ) {
         if( pbase()==epptr() ) {
-            if( !send_char( c ) ) {
+            if( !send_char( traits_type::to_char_type( c ) ) ) {
                 return traits_type::eof();
             }
         }else {
-            sputc( c );
+            sputc( traits_type::to_char_type( c ) );
         }
     }
-    return traits_type::not_eof( c );
+    return traits_type::not_eof( traits_type::to_char_type( c ) );
 }
 
 int exec_stream_buffer_t::sync()

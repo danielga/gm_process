@@ -460,5 +460,6 @@ GMOD_MODULE_OPEN( )
 
 GMOD_MODULE_CLOSE( )
 {
+	(void)state;
 	return 0;
 }

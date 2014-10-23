@@ -314,7 +314,6 @@ thread_buffer_t::~thread_buffer_t()
         }catch(...){
         }
         if( !stopped ) {
-            DWORD code=GetLastError();
             // otherwize, the thread will be left running loose stomping on freed memory.
             std::terminate();
         }
@@ -506,7 +505,7 @@ DWORD WINAPI thread_buffer_t::reader_thread( LPVOID param )
     try {
         read_buffer=new char[p->m_read_buffer_size];
 
-        while( true ) {
+        for( ; ; ) {
             // see if get() wants more data, or if someone wants to stop the thread
             wait_result_t wait_result=wait( p->m_stop_thread, p->m_want_data, p->m_wait_timeout );
             if( !wait_result.ok() && !wait_result.timed_out() ) {
@@ -634,7 +633,7 @@ DWORD WINAPI thread_buffer_t::writer_thread( LPVOID param )
         buffer.size=0;
         std::size_t buffer_offset=0;
 
-        while( true ) {
+        for( ; ; ) {
             // wait for got_data or destruction, ignore timeout errors 
             // for destruction the timeout is normally expected,
             // for got data the timeout is not normally expected but tolerable (no one wants to write)
