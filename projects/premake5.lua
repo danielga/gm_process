@@ -1,5 +1,5 @@
 GARRYSMOD_MODULE_BASE_FOLDER = "../gmod-module-base"
-SOURCE_FOLDER = "../Source"
+SOURCE_FOLDER = "../source"
 LIBEXECSTREAM_FOLDER = "../libexecstream"
 PROJECT_FOLDER = os.get() .. "/" .. _ACTION
 
@@ -17,13 +17,13 @@ solution("gm_process")
 	filter("configurations:Release")
 		optimize("On")
 		vectorextensions("SSE2")
-		objdir(PROJECT_FOLDER .. "/Intermediate")
-		targetdir(PROJECT_FOLDER .. "/Release")
+		objdir(PROJECT_FOLDER .. "/intermediate")
+		targetdir(PROJECT_FOLDER .. "/release")
 
-	filter({"configurations:Debug"})
+	filter("configurations:Debug")
 		flags({"Symbols"})
-		objdir(PROJECT_FOLDER .. "/Intermediate")
-		targetdir(PROJECT_FOLDER .. "/Debug")
+		objdir(PROJECT_FOLDER .. "/intermediate")
+		targetdir(PROJECT_FOLDER .. "/debug")
 
 	project("gmsv_process")
 		kind("SharedLib")
