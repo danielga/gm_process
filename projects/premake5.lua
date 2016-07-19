@@ -1,23 +1,23 @@
 newoption({
 	trigger = "gmcommon",
-	description = "Sets the path to the garrysmod_common (https://bitbucket.org/danielga/garrysmod_common) directory",
-	value = "path to garrysmod_common dir"
+	description = "Sets the path to the garrysmod_common (https://github.com/danielga/garrysmod_common) directory",
+	value = "path to garrysmod_common directory"
 })
 
 local gmcommon = _OPTIONS.gmcommon or os.getenv("GARRYSMOD_COMMON")
 if gmcommon == nil then
-	error("you didn't provide a path to your garrysmod_common (https://bitbucket.org/danielga/garrysmod_common) directory")
+	error("you didn't provide a path to your garrysmod_common (https://github.com/danielga/garrysmod_common) directory")
 end
 
 include(gmcommon)
 
 local LIBEXECSTREAM_FOLDER = "../libexecstream"
 
-CreateSolution("luaerror")
-	CreateProject(SERVERSIDE)
+CreateWorkspace({name = "process"})
+	CreateProject({serverside = true})
 		includedirs({LIBEXECSTREAM_FOLDER})
 		files({LIBEXECSTREAM_FOLDER .. "/exec-stream.cpp"})
 
-	CreateProject(CLIENTSIDE)
+	CreateProject({serverside = false})
 		includedirs({LIBEXECSTREAM_FOLDER})
 		files({LIBEXECSTREAM_FOLDER .. "/exec-stream.cpp"})
