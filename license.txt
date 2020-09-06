@@ -3,7 +3,7 @@ A Garry's Mod module to create asynchronous child processes. It also
 allows you to use its error, input and output handles to retrieve or
 push data to the process.
 -----------------------------------------------------------------------
-Copyright (c) 2015-2020, Daniel Almeida
+Copyright (c) 2015-2021, Daniel Almeida
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without

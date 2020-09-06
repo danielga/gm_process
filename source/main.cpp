@@ -1,465 +1,406 @@
 #include <GarrysMod/Lua/Interface.h>
-#include <exec-stream.h>
-#include <sstream>
 
-#define PROCESS_META_NAME "Process"
-#define PROCESS_META_ID 254
+#include <cstdint>
+#include <cstddef>
+#include <vector>
+#include <mutex>
+#include <queue>
+#include <string>
+#include <unordered_map>
+#include <functional>
 
-struct ExtendedUserData
+#include <process.hpp>
+
+namespace process
 {
-	void *data;
-	unsigned char type;
-	int ref;
-};
+	static const char meta_name[] = "Process";
+	static const char invalid_handle[] = "Invalid Process handle";
+	static int32_t meta_type = GarrysMod::Lua::Type::None;
 
-LUA_FUNCTION( Process_New )
-{
-	try
+	class Process : public TinyProcessLib::Process
 	{
-		exec_stream_t *cmdstream = new exec_stream_t( );
+	public:
+		Process( const std::vector<std::string> &arguments, const std::string &cwd, const std::unordered_map<std::string, std::string> &env ) noexcept :
+			TinyProcessLib::Process(
+				arguments,
+				cwd,
+				env,
+				std::bind( &Process::ReceiveStdOut, this, std::placeholders::_1, std::placeholders::_2 ),
+				std::bind( &Process::ReceiveStdErr, this, std::placeholders::_1, std::placeholders::_2 ),
+				true
+			)
+		{ }
 
-		ExtendedUserData *userdata = (ExtendedUserData *)LUA->NewUserdata( sizeof( ExtendedUserData ) );
-		userdata->type = PROCESS_META_ID;
-		userdata->data = cmdstream;
+		Process( const std::vector<std::string> &arguments, const std::string &cwd ) noexcept :
+			TinyProcessLib::Process(
+				arguments,
+				cwd,
+				std::bind( &Process::ReceiveStdOut, this, std::placeholders::_1, std::placeholders::_2 ),
+				std::bind( &Process::ReceiveStdErr, this, std::placeholders::_1, std::placeholders::_2 ),
+				true
+			)
+		{ }
 
-		LUA->CreateTable( );
-		userdata->ref = LUA->ReferenceCreate( );
+		std::vector<std::string> GetStdOut( ) noexcept
+		{
+			std::vector<std::string> out;
 
-		LUA->CreateMetaTableType( PROCESS_META_NAME, PROCESS_META_ID );
-		LUA->SetMetaTable( -2 );
+			std::lock_guard<std::mutex> lock( m_stdout_mutex );
 
-		return 1;
-	}
-	catch( const std::exception &e )
+			for( size_t k = 0; k < m_stdout_queue.size( ); ++k )
+			{
+				out.emplace_back( m_stdout_queue.front( ) );
+				m_stdout_queue.pop( );
+			}
+
+			return out;
+		}
+
+		std::vector<std::string> GetStdErr( ) noexcept
+		{
+			std::vector<std::string> err;
+
+			std::lock_guard<std::mutex> lock( m_stderr_mutex );
+
+			for( size_t k = 0; k < m_stderr_queue.size( ); ++k )
+			{
+				err.emplace_back( m_stderr_queue.front( ) );
+				m_stderr_queue.pop( );
+			}
+
+			return err;
+		}
+
+	private:
+		void ReceiveStdOut( const char *bytes, size_t n ) noexcept
+		{
+			std::lock_guard<std::mutex> lock( m_stdout_mutex );
+			m_stdout_queue.emplace( bytes, n );
+		}
+
+		void ReceiveStdErr( const char *bytes, size_t n ) noexcept
+		{
+			std::lock_guard<std::mutex> lock( m_stderr_mutex );
+			m_stderr_queue.emplace( bytes, n );
+		}
+
+		std::mutex m_stdout_mutex;
+		std::queue<std::string> m_stdout_queue;
+		std::mutex m_stderr_mutex;
+		std::queue<std::string> m_stderr_queue;
+	};
+
+	static Process *Get( GarrysMod::Lua::ILuaBase *LUA, const int32_t index )
 	{
-		LUA->PushNil( );
-		LUA->PushString( e.what( ) );
-		return 2;
-	}
-}
+		LUA->CheckType( index, meta_type );
+		Process *cmdstream = LUA->GetUserType<Process>( index, meta_type );
+		if( cmdstream == nullptr )
+			LUA->ArgError( index, invalid_handle );
 
-LUA_FUNCTION( Process_Delete )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
-	{
-		return 0;
-	}
-
-	LUA->ReferenceFree( userdata->ref );
-	delete (exec_stream_t *)userdata->data;
-
-	return 0;
-}
-
-LUA_FUNCTION( Process_Index )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
-	{
-		LUA->ArgError( 1, "Invalid " PROCESS_META_NAME " handle" );
-		return 0;
-	}
-
-	LUA->GetMetaTable( 1 );
-	LUA->PushString( "__functions" );
-	LUA->GetTable( -2 );
-
-	LUA->Push( 2 );
-	LUA->GetTable( -2 );
-
-	if( LUA->GetType( -1 ) != GarrysMod::Lua::Type::NIL )
-	{
-		LUA->Remove( -3 ); // Metatable is removed here.
-		LUA->Remove( -2 ); // __functions is removed here.
-		return 1;
-	}
-
-	LUA->Pop( 3 ); // Object (nil), __functions and metatable are removed here.
-
-	if( userdata->ref == -2 )
-	{
-		return 0;
-	}
-
-	LUA->ReferencePush( userdata->ref );
-	LUA->Push( 2 );
-	LUA->GetTable( -2 );
-	LUA->Remove( -2 ); // Value pushed from reference removed here.
-	return 1;
-}
-
-LUA_FUNCTION( Process_NewIndex )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
-	{
-		LUA->ArgError( 1, "Invalid " PROCESS_META_NAME " handle" );
-		return 0;
+		return cmdstream;
 	}
 
-	if( userdata->ref == -2 )
+	LUA_FUNCTION( Create )
 	{
-		LUA->CreateTable( );
-		userdata->ref = LUA->ReferenceCreate( );
-	}
+		const char *executable = LUA->CheckString( 1 );
 
-	LUA->ReferencePush( userdata->ref );
-	LUA->Push( 2 );
-	LUA->Push( 3 );
-	LUA->SetTable( -3 );
+		if( LUA->Top( ) >= 2 )
+			LUA->CheckType( 2, GarrysMod::Lua::Type::Table );
 
-	LUA->Pop( );
+		const char *cwd = nullptr;
+		if( LUA->Top( ) >= 3 )
+			cwd = LUA->CheckString( 3 );
 
-	return 0;
-}
-
-LUA_FUNCTION( Process_ToString )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
-	{
-		LUA->ArgError( 1, "Invalid " PROCESS_META_NAME " handle" );
-		return 0;
-	}
-
-	std::stringstream tostring;
-	tostring << PROCESS_META_NAME ": " << userdata->data;
-	LUA->PushString( tostring.str( ).c_str( ) );
-	return 1;
-}
-
-LUA_FUNCTION( Process_Equal )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-	LUA->CheckType( 2, PROCESS_META_ID );
-
-	ExtendedUserData *userdata1 = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	ExtendedUserData *userdata2 = (ExtendedUserData *)LUA->GetUserdata( 2 );
-
-	LUA->PushBool( userdata1->data == userdata2->data );
-	return 1;
-}
-
-LUA_FUNCTION( Process_Start )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-	LUA->CheckType( 2, GarrysMod::Lua::Type::STRING );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
-	{
-		LUA->ArgError( 1, "Invalid " PROCESS_META_NAME " handle" );
-		return 0;
-	}
-
-	try
-	{
-		exec_stream_t *cmdstream = (exec_stream_t *)userdata->data;
+		if( LUA->Top( ) >= 4 )
+			LUA->CheckType( 4, GarrysMod::Lua::Type::Table );
 
 		std::vector<std::string> args_list;
+		args_list.emplace_back( executable );
 
-		if( LUA->IsType( 3, GarrysMod::Lua::Type::TABLE ) )
+		if( LUA->Top( ) >= 3 )
 		{
-			unsigned int num = 1;
-			LUA->PushNumber( (double)num );
-			LUA->RawGet( 3 );
-			while( LUA->IsType( -1, GarrysMod::Lua::Type::STRING ) )
+			uint32_t num = 1;
+			LUA->PushNumber( num );
+			LUA->RawGet( 2 );
+
+			const char *value = LUA->GetString( -1 );
+			while( value != nullptr )
 			{
-				args_list.push_back( LUA->GetString( -1 ) );
+				args_list.emplace_back( value );
 				LUA->Pop( 1 );
 
-				LUA->PushNumber( (double)++num );
-				LUA->RawGet( 3 );
+				LUA->PushNumber( ++num );
+				LUA->RawGet( 2 );
+
+				value = LUA->GetString( -1 );
+			}
+
+			LUA->Pop( 1 );
+		}
+
+		bool has_env = false;
+		std::unordered_map<std::string, std::string> env_list;
+		if( LUA->Top( ) >= 4 )
+		{
+			has_env = true;
+
+			LUA->PushNil( );
+			while( LUA->Next( 4 ) != 0 )
+			{
+				LUA->Push( -2 );
+				const char *key = LUA->GetString( -1 );
+				LUA->Pop( 1 );
+
+				const char *value = LUA->GetString( -1 );
+				LUA->Pop( 1 );
+
+				if( key != nullptr && value != nullptr )
+					env_list[key] = value;
 			}
 		}
-		else if( LUA->IsType( 3, GarrysMod::Lua::Type::STRING ) )
+
+		std::unique_ptr<Process> cmdstream;
+		if( has_env )
+			cmdstream = std::make_unique<Process>( args_list, cwd != nullptr ? cwd : std::string( ), env_list );
+		else
+			cmdstream = std::make_unique<Process>( args_list, cwd != nullptr ? cwd : std::string( ) );
+
+		if( cmdstream->get_id( ) <= 0 )
+			return 0;
+
+		LUA->PushUserType( cmdstream.release( ), meta_type );
+		return 1;
+	}
+
+	LUA_FUNCTION( gc )
+	{
+		LUA->CheckType( 1, meta_type );
+
+		Process *cmdstream = LUA->GetUserType<Process>( 1, meta_type );
+		if( cmdstream == nullptr )
+			return 0;
+
+		LUA->SetUserType( 1, nullptr );
+		delete cmdstream;
+		return 0;
+	}
+
+	LUA_FUNCTION( index )
+	{
+		LUA->CheckType( 1, meta_type );
+
+		LUA->GetMetaTable( 1 );
+		LUA->Push( 2 );
+		LUA->RawGet( -2 );
+		if( !LUA->IsType( -1, GarrysMod::Lua::Type::NIL ) )
+			return 1;
+
+		LUA->GetFEnv( 1 );
+		LUA->Push( 2 );
+		LUA->RawGet( -2 );
+		return 1;
+	}
+
+	LUA_FUNCTION( newindex )
+	{
+		LUA->CheckType( 1, meta_type );
+
+		LUA->GetFEnv( 1 );
+		LUA->Push( 2 );
+		LUA->Push( 3 );
+		LUA->RawSet( -3 );
+		return 0;
+	}
+
+	LUA_FUNCTION( tostring )
+	{
+		Process *cmdstream = Get( LUA, 1 );
+		LUA->PushFormattedString( "%s: %p", meta_name, cmdstream );
+		return 1;
+	}
+
+	LUA_FUNCTION( eq )
+	{
+		Process *cmdstream1 = LUA->GetUserType<Process>( 1, meta_type );
+		Process *cmdstream2 = LUA->GetUserType<Process>( 2, meta_type );
+		LUA->PushBool( cmdstream1 != nullptr && cmdstream2 != nullptr && cmdstream1 == cmdstream2 );
+		return 1;
+	}
+
+	LUA_FUNCTION( GetTable )
+	{
+		Get( LUA, 1 );
+		LUA->GetFEnv( 1 );
+		return 1;
+	}
+
+	LUA_FUNCTION( Write )
+	{
+		Process *cmdstream = Get( LUA, 1 );
+		LUA->CheckType( 2, GarrysMod::Lua::Type::String );
+
+		uint32_t size = 0;
+		const char *input = LUA->GetString( 2, &size );
+		LUA->PushBool( cmdstream->write( input, size ) );
+		return 1;
+	}
+
+	LUA_FUNCTION( CloseInput )
+	{
+		Process *cmdstream = Get( LUA, 1 );
+		cmdstream->close_stdin( );
+		return 0;
+	}
+
+	LUA_FUNCTION( Close )
+	{
+		Process *cmdstream = Get( LUA, 1 );
+		LUA->PushNumber( cmdstream->get_exit_status( ) );
+		return 1;
+	}
+
+	LUA_FUNCTION( Kill )
+	{
+		Process *cmdstream = Get( LUA, 1 );
+
+		bool force = false;
+		if( LUA->Top( ) > 1 )
 		{
-			args_list.push_back( LUA->GetString( 3 ) );
+			LUA->CheckType( 2, GarrysMod::Lua::Type::Bool );
+			force = LUA->GetBool( 2 );
 		}
 
-		cmdstream->start( LUA->GetString( 2 ), args_list.begin( ), args_list.end( ) );
-
-		LUA->PushBool( true );
-		return 1;
-	}
-	catch( std::exception &e )
-	{
-		LUA->PushNil( );
-		LUA->PushString( e.what( ) );
-		return 2;
-	}
-}
-
-LUA_FUNCTION( Process_SetTimeout )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-	LUA->CheckType( 2, GarrysMod::Lua::Type::NUMBER );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
-	{
-		LUA->ArgError( 1, "Invalid " PROCESS_META_NAME " handle" );
+		cmdstream->kill( force );
 		return 0;
 	}
 
-	try
+	LUA_FUNCTION( GetExitCode )
 	{
-		exec_stream_t *cmdstream = (exec_stream_t *)userdata->data;
-		cmdstream->set_wait_timeout( exec_stream_t::s_child, (exec_stream_t::timeout_t)LUA->GetNumber( 2 ) );
-		LUA->PushBool( true );
+		Process *cmdstream = Get( LUA, 1 );
+
+		int exit_status = 0;
+		if( !cmdstream->try_get_exit_status( exit_status ) )
+			return 0;
+
+		LUA->PushNumber( exit_status );
 		return 1;
 	}
-	catch( std::exception &e )
-	{
-		LUA->PushNil( );
-		LUA->PushString( e.what( ) );
-		return 2;
-	}
-}
 
-LUA_FUNCTION( Process_CloseInput )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
+	LUA_FUNCTION( GetOutput )
 	{
-		LUA->ArgError( 1, "Invalid " PROCESS_META_NAME " handle" );
-		return 0;
-	}
+		Process *cmdstream = Get( LUA, 1 );
 
-	try
-	{
-		exec_stream_t *cmdstream = (exec_stream_t *)userdata->data;
-		LUA->PushBool( cmdstream->close_in( ) );
-		return 1;
-	}
-	catch( std::exception &e )
-	{
-		LUA->PushNil( );
-		LUA->PushString( e.what( ) );
-		return 2;
-	}
-}
-
-LUA_FUNCTION( Process_Close )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
-	{
-		LUA->ArgError( 1, "Invalid " PROCESS_META_NAME " handle" );
-		return 0;
-	}
-
-	try
-	{
-		exec_stream_t *cmdstream = (exec_stream_t *)userdata->data;
-		LUA->PushBool( cmdstream->close( ) );
-		return 1;
-	}
-	catch( std::exception &e )
-	{
-		LUA->PushNil( );
-		LUA->PushString( e.what( ) );
-		return 2;
-	}
-}
-
-LUA_FUNCTION( Process_Kill )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
-	{
-		LUA->ArgError( 1, "Invalid " PROCESS_META_NAME " handle" );
-		return 0;
-	}
-
-	try
-	{
-		exec_stream_t *cmdstream = (exec_stream_t *)userdata->data;
-		cmdstream->kill( );
-		LUA->PushBool( true );
-		return 1;
-	}
-	catch( std::exception &e )
-	{
-		LUA->PushNil( );
-		LUA->PushString( e.what( ) );
-		return 2;
-	}
-}
-
-LUA_FUNCTION( Process_GetExitCode )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
-	{
-		LUA->ArgError( 1, "Invalid " PROCESS_META_NAME " handle" );
-		return 0;
-	}
-
-	try
-	{
-		exec_stream_t *cmdstream = (exec_stream_t *)userdata->data;
-		LUA->PushNumber( (double)cmdstream->exit_code( ) );
-		return 1;
-	}
-	catch( std::exception &e )
-	{
-		LUA->PushNil( );
-		LUA->PushString( e.what( ) );
-		return 2;
-	}
-}
-
-LUA_FUNCTION( Process_GetOutput )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
-	{
-		LUA->ArgError( 1, "Invalid " PROCESS_META_NAME " handle" );
-		return 0;
-	}
-
-	try
-	{
-		exec_stream_t *cmdstream = (exec_stream_t *)userdata->data;
+		const auto data = cmdstream->GetStdOut( );
+		if( data.empty( ) )
+			return 0;
 
 		LUA->CreateTable( );
 
-		unsigned int num = 0;
-		std::string out;
-		while( std::getline( cmdstream->out( ), out ).good( ) )
+		for( size_t k = 0; k < data.size( ); ++k )
 		{
-			LUA->PushNumber( (double)++num );
-			LUA->PushString( out.c_str( ), out.size( ) );
+			LUA->PushNumber( static_cast<double>( k ) + 1 );
+			LUA->PushString( data[k].c_str( ), data[k].size( ) );
 			LUA->SetTable( -3 );
 		}
 
 		return 1;
 	}
-	catch( std::exception &e )
-	{
-		LUA->PushNil( );
-		LUA->PushString( e.what( ) );
-		return 2;
-	}
-}
 
-LUA_FUNCTION( Process_GetErrorOutput )
-{
-	LUA->CheckType( 1, PROCESS_META_ID );
-
-	ExtendedUserData *userdata = (ExtendedUserData *)LUA->GetUserdata( 1 );
-	if( !userdata->data )
+	LUA_FUNCTION( GetErrorOutput )
 	{
-		LUA->ArgError( 1, "Invalid " PROCESS_META_NAME " handle" );
-		return 0;
-	}
+		Process *cmdstream = Get( LUA, 1 );
 
-	try
-	{
-		exec_stream_t *cmdstream = (exec_stream_t *)userdata->data;
+		const auto data = cmdstream->GetStdErr( );
+		if( data.empty( ) )
+			return 0;
 
 		LUA->CreateTable( );
 
-		unsigned int num = 0;
-		std::string out;
-		while( std::getline( cmdstream->err( ), out ).good( ) )
+		for( size_t k = 0; k < data.size( ); ++k )
 		{
-			LUA->PushNumber( (double)++num );
-			LUA->PushString( out.c_str( ), out.size( ) );
+			LUA->PushNumber( static_cast<double>( k ) + 1 );
+			LUA->PushString( data[k].c_str( ), data[k].size( ) );
 			LUA->SetTable( -3 );
 		}
 
 		return 1;
 	}
-	catch( std::exception &e )
+
+	static void Initialize( GarrysMod::Lua::ILuaBase *LUA )
+	{
+		LUA->CreateTable( );
+
+		LUA->PushString( "process 1.0.0" );
+		LUA->SetField( -2, "Version" );
+
+		// version num follows LuaJIT style, xxyyzz
+		LUA->PushNumber( 10000 );
+		LUA->SetField( -2, "VersionNum" );
+
+		LUA->PushCFunction( process::Create );
+		LUA->SetField( -2, "Create" );
+
+		LUA->SetField( GarrysMod::Lua::INDEX_GLOBAL, "process" );
+
+		process::meta_type = LUA->CreateMetaTable( process::meta_name );
+
+		LUA->PushCFunction( gc );
+		LUA->SetField( -2, "__gc" );
+
+		LUA->PushCFunction( index );
+		LUA->SetField( -2, "__index" );
+
+		LUA->PushCFunction( newindex );
+		LUA->SetField( -2, "__newindex" );
+
+		LUA->PushCFunction( tostring );
+		LUA->SetField( -2, "__tostring" );
+
+		LUA->PushCFunction( eq );
+		LUA->SetField( -2, "__eq" );
+
+		LUA->PushCFunction( GetTable );
+		LUA->SetField( -2, "GetTable" );
+
+		LUA->PushCFunction( Write );
+		LUA->SetField( -2, "Write" );
+
+		LUA->PushCFunction( CloseInput );
+		LUA->SetField( -2, "CloseInput" );
+
+		LUA->PushCFunction( Close );
+		LUA->SetField( -2, "Close" );
+
+		LUA->PushCFunction( Kill );
+		LUA->SetField( -2, "Kill" );
+
+		LUA->PushCFunction( GetExitCode );
+		LUA->SetField( -2, "GetExitCode" );
+
+		LUA->PushCFunction( GetOutput );
+		LUA->SetField( -2, "GetOutput" );
+
+		LUA->PushCFunction( GetErrorOutput );
+		LUA->SetField( -2, "GetErrorOutput" );
+
+		LUA->Pop( 1 );
+	}
+
+	static void Deinitialize( GarrysMod::Lua::ILuaBase *LUA )
 	{
 		LUA->PushNil( );
-		LUA->PushString( e.what( ) );
-		return 2;
+		LUA->SetField( GarrysMod::Lua::INDEX_GLOBAL, "process" );
 	}
 }
 
 GMOD_MODULE_OPEN( )
 {
-	LUA->PushSpecial( GarrysMod::Lua::SPECIAL_GLOB );
-
-	LUA->PushCFunction( Process_New );
-	LUA->SetField( -2, "Process" );
-
-	LUA->Pop( 1 );
-
-	LUA->CreateMetaTableType( PROCESS_META_NAME, PROCESS_META_ID );
-
-	LUA->PushCFunction( Process_Delete );
-	LUA->SetField( -2, "__gc" );
-
-	LUA->PushCFunction( Process_Index );
-	LUA->SetField( -2, "__index" );
-
-	LUA->PushCFunction( Process_NewIndex );
-	LUA->SetField( -2, "__newindex" );
-
-	LUA->PushCFunction( Process_ToString );
-	LUA->SetField( -2, "__tostring" );
-
-	LUA->PushCFunction( Process_Equal );
-	LUA->SetField( -2, "__eq" );
-
-	LUA->CreateTable( );
-
-	LUA->PushCFunction( Process_Start );
-	LUA->SetField( -2, "Start" );
-
-	LUA->PushCFunction( Process_SetTimeout );
-	LUA->SetField( -2, "SetTimeout" );
-
-	LUA->PushCFunction( Process_CloseInput );
-	LUA->SetField( -2, "CloseInput" );
-
-	LUA->PushCFunction( Process_Close );
-	LUA->SetField( -2, "Close" );
-
-	LUA->PushCFunction( Process_Kill );
-	LUA->SetField( -2, "Kill" );
-
-	LUA->PushCFunction( Process_GetExitCode );
-	LUA->SetField( -2, "GetExitCode" );
-
-	LUA->PushCFunction( Process_GetOutput );
-	LUA->SetField( -2, "GetOutput" );
-
-	LUA->PushCFunction( Process_GetErrorOutput );
-	LUA->SetField( -2, "GetErrorOutput" );
-
-	LUA->SetField( -2, "__functions" );
-
-	LUA->Pop( 1 );
-
+	process::Initialize( LUA );
 	return 0;
 }
 
 GMOD_MODULE_CLOSE( )
 {
-	(void)state;
+	process::Deinitialize( LUA );
 	return 0;
 }
